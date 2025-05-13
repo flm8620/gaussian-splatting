@@ -44,6 +44,9 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+
+from scopetimer.resource_monitor import ResourceMonitor
+
 def get_image_file_list_regex(output_folder, regex_pattern):
     """
     Returns a list of image filenames in output_folder that match the given regex pattern.
@@ -145,13 +148,12 @@ def save_image(img: torch.Tensor, path):
     # print image min max value and shape
     Image.fromarray(img_uint8).save(path)
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(tb_writer, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
     viz_folder = os.path.join(args.model_path, 'viz')
     os.makedirs(viz_folder, exist_ok=True)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
@@ -369,7 +371,10 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    dataset = lp.extract(args)
+    tb_writer = prepare_output_and_logger(dataset)
+    with ResourceMonitor(tensorboard_writer=tb_writer):
+        training(tb_writer, dataset, op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")

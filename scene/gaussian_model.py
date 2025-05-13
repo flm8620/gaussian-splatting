@@ -175,6 +175,80 @@ class GaussianModel:
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
 
+    def generate_random_points_in_sphere_with_sizing_field(
+            self, num_points, radius, a):
+        # the pointcloud density f(r) should be proportional to 1/h^3(r)
+
+        # the sampling density of radius in [0, R] should be proportional to
+        # r^2 * f(r) = r^2 / h^3(r)
+        # given
+        # h(r) = 1     if r <= R/a
+        #      = r*a/R if r >  R/a
+        # we have the CDF of the sampling density should be
+        # G(r) = C * \int_0^r r^2 / h^3(r) dr
+        # for r < R/a
+        # G(r) = C * \int_0^r r^2 dr = C * r^3 / 3
+        # for r > R/a
+        # G(r) = C * \int_0^{R/a} r^2 dr + C * \int_{R/a}^r R^3/a^3/r dr
+        #      = C * R^3 / 3 / a^3 + C * R^3 / a^3 * \int_{R/a}^r 1/r dr
+        #      = C * R^3 / 3 / a^3 + C * R^3 / a^3 * log(r*a / R)
+        #      = C * R^3 / a^3 * (1/3 + log(r*a / R))
+        # we have G(R) = 1
+        # therefore C = a^3 / R^3 / (1/3 + log(a))
+        # To sample a point following the above density
+        # we sample a number p in [0, 1] uniformly,
+        # and we need to compare p with this value
+        # G(R/a) = C * R^3/a^3/3
+        # if p < G(R/a), we need to use the inverse function of G(r) to get r
+        # G^{-1}(p) = (3 * p / C)^(1/3)
+        # if p > G(R/a), we need to use the inverse function of G(r) to get r
+        # G^{-1}(p) = R/a * exp(p * a^3 / C /R^3 - 1/3)
+
+        C = a**3 / radius**3 / (1 / 3 + np.log(a))
+        splitter = C * radius**3 / a**3 / 3
+
+        directions = np.random.normal(0, 1, (num_points, 3))
+        directions /= np.linalg.norm(directions, axis=1)[:, np.newaxis]
+
+        p = np.random.uniform(0, 1, num_points)
+        r = np.where(p < splitter, (3 * p / C)**(1 / 3),
+                     radius / a * np.exp(p * a**3 / C / radius**3 - 1.0 / 3))
+        points = directions * r[:, np.newaxis]
+        return points
+    
+    def create_from_random_points(self, cam_infos : int, spatial_lr_scale : float):
+        self.spatial_lr_scale = spatial_lr_scale
+        n_init = 100000
+        points_np = self.generate_random_points_in_sphere_with_sizing_field(
+                n_init, spatial_lr_scale, 10.0)
+        points_colors = torch.rand(n_init, 3, dtype=torch.float32, device='cuda')
+        fused_point_cloud = torch.tensor(points_np).float().cuda()
+        fused_color = RGB2SH(points_colors)
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
+
+        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(points_np).float().cuda()), 0.0000001)
+        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        rots[:, 0] = 1
+
+        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
+        self.pretrained_exposures = None
+        exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
+        self._exposure = nn.Parameter(exposure.requires_grad_(True))
+
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")

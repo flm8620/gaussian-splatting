@@ -1,0 +1,1 @@
+python train.py -s /home/norman/host_home/data/tandt_db/tandt/train-subset100 -m /home/norman/host_home/data/outputs/train100-3dgs-sh0-randinit-profile --sh_degree=0 --iterations=10000 --viz_view_ids=5

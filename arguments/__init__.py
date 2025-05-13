@@ -56,6 +56,7 @@ class ModelParams(ParamGroup):
         self.train_test_exp = False
         self.data_device = "cuda"
         self.eval = False
+        self.viz_view_ids = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
